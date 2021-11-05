@@ -1,9 +1,11 @@
 """titiler app."""
 
 import logging
+import base64
 
 from titiler.application.custom import templates
-from titiler.application.routers import cog, mosaic, stac, tms
+from titiler.application.routers import mosaic, stac, tms
+from titiler.core.factory import TilerFactory 
 from titiler.application.settings import ApiSettings
 from titiler.application.version import __version__ as titiler_version
 from titiler.core.errors import DEFAULT_STATUS_CODES, add_exception_handlers
@@ -15,7 +17,7 @@ from titiler.core.middleware import (
 )
 from titiler.mosaic.errors import MOSAIC_STATUS_CODES
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
@@ -26,7 +28,19 @@ logging.getLogger("botocore.credentials").disabled = True
 logging.getLogger("botocore.utils").disabled = True
 logging.getLogger("rio-tiler").setLevel(logging.ERROR)
 
+# Custom Path dependency which can `decode` a base64 url
+def DatasetPathParams(
+    url: str = Query(..., description="Dataset URL"),
+    base64_encoded: bool = Query(None)
+) -> str:
+    """Create dataset path from args"""
+    if base64_encoded:
+        url = base64.b64decode(url).decode()
+    return url
+
 api_settings = ApiSettings()
+
+cog = TilerFactory(path_dependency=DatasetPathParams)
 
 app = FastAPI(
     title=api_settings.name,
@@ -35,8 +49,11 @@ app = FastAPI(
     root_path=api_settings.root_path,
 )
 
-if not api_settings.disable_cog:
-    app.include_router(cog.router, prefix="/cog", tags=["Cloud Optimized GeoTIFF"])
+app.include_router(cog.router, prefix="/cog", tags=["Cloud Optimized GeoTIFF"])
+
+# if not api_settings.disable_cog:
+#     app.include_router(cog.router, prefix="/cog", tags=["Cloud Optimized GeoTIFF"])
+
 
 if not api_settings.disable_stac:
     app.include_router(
