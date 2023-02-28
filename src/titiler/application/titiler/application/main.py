@@ -3,40 +3,50 @@
 import logging
 import base64
 
-from titiler.application.custom import templates
-from titiler.application.routers import mosaic, stac, tms
-from titiler.core.factory import TilerFactory 
+from fastapi import FastAPI
+from rio_tiler.io import STACReader
+from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from starlette.responses import HTMLResponse
+from starlette.templating import Jinja2Templates
+from starlette_cramjam.middleware import CompressionMiddleware
+
+from titiler.application import __version__ as titiler_version
 from titiler.application.settings import ApiSettings
-from titiler.application.version import __version__ as titiler_version
 from titiler.core.errors import DEFAULT_STATUS_CODES, add_exception_handlers
+from titiler.core.factory import (
+    AlgorithmFactory,
+    MultiBaseTilerFactory,
+    TilerFactory,
+    TMSFactory,
+)
 from titiler.core.middleware import (
     CacheControlMiddleware,
     LoggerMiddleware,
     LowerCaseQueryStringMiddleware,
     TotalTimeMiddleware,
 )
+from titiler.extensions import (
+    cogValidateExtension,
+    cogViewerExtension,
+    stacExtension,
+    stacViewerExtension,
+)
 from titiler.mosaic.errors import MOSAIC_STATUS_CODES
+from titiler.mosaic.factory import MosaicTilerFactory
 
-from fastapi import FastAPI, Query
-
-from starlette.middleware.cors import CORSMiddleware
-from starlette.requests import Request
-from starlette.responses import HTMLResponse
-from starlette_cramjam.middleware import CompressionMiddleware
+try:
+    from importlib.resources import files as resources_files  # type: ignore
+except ImportError:
+    # Try backported to PY<39 `importlib_resources`.
+    from importlib_resources import files as resources_files  # type: ignore
 
 logging.getLogger("botocore.credentials").disabled = True
 logging.getLogger("botocore.utils").disabled = True
 logging.getLogger("rio-tiler").setLevel(logging.ERROR)
 
-# Custom Path dependency which can `decode` a base64 url
-def DatasetPathParams(
-    url: str = Query(..., description="Dataset URL"),
-    base64_encoded: bool = Query(None)
-) -> str:
-    """Create dataset path from args"""
-    if base64_encoded:
-        url = base64.b64decode(url).decode()
-    return url
+# TODO: mypy fails in python 3.9, we need to find a proper way to do this
+templates = Jinja2Templates(directory=str(resources_files(__package__) / "templates"))  # type: ignore
 
 api_settings = ApiSettings()
 
@@ -44,29 +54,68 @@ cog = TilerFactory(path_dependency=DatasetPathParams)
 
 app = FastAPI(
     title=api_settings.name,
-    description="A lightweight Cloud Optimized GeoTIFF tile server",
+    description="""A modern dynamic tile server built on top of FastAPI and Rasterio/GDAL.
+
+---
+
+**Documentation**: <a href="https://developmentseed.org/titiler/" target="_blank">https://developmentseed.org/titiler/</a>
+
+**Source Code**: <a href="https://github.com/developmentseed/titiler" target="_blank">https://github.com/developmentseed/titiler</a>
+
+---
+    """,
     version=titiler_version,
     root_path=api_settings.root_path,
 )
 
-app.include_router(cog.router, prefix="/cog", tags=["Cloud Optimized GeoTIFF"])
+###############################################################################
+# Simple Dataset endpoints (e.g Cloud Optimized GeoTIFF)
+if not api_settings.disable_cog:
+    cog = TilerFactory(
+        router_prefix="/cog",
+        extensions=[
+            cogValidateExtension(),
+            cogViewerExtension(),
+            stacExtension(),
+        ],
+    )
 
-# if not api_settings.disable_cog:
-#     app.include_router(cog.router, prefix="/cog", tags=["Cloud Optimized GeoTIFF"])
+    app.include_router(cog.router, prefix="/cog", tags=["Cloud Optimized GeoTIFF"])
 
 
+###############################################################################
+# STAC endpoints
 if not api_settings.disable_stac:
+    stac = MultiBaseTilerFactory(
+        reader=STACReader,
+        router_prefix="/stac",
+        extensions=[
+            stacViewerExtension(),
+        ],
+    )
+
     app.include_router(
         stac.router, prefix="/stac", tags=["SpatioTemporal Asset Catalog"]
     )
 
+###############################################################################
+# Mosaic endpoints
 if not api_settings.disable_mosaic:
+    mosaic = MosaicTilerFactory(router_prefix="/mosaicjson")
     app.include_router(mosaic.router, prefix="/mosaicjson", tags=["MosaicJSON"])
 
-app.include_router(tms.router, tags=["TileMatrixSets"])
+###############################################################################
+# TileMatrixSets endpoints
+tms = TMSFactory()
+app.include_router(tms.router, tags=["Tiling Schemes"])
+
+###############################################################################
+# Algorithms endpoints
+algorithms = AlgorithmFactory()
+app.include_router(algorithms.router, tags=["Algorithms"])
+
 add_exception_handlers(app, DEFAULT_STATUS_CODES)
 add_exception_handlers(app, MOSAIC_STATUS_CODES)
-
 
 # Set all CORS enabled origins
 if api_settings.cors_origins:
@@ -104,7 +153,13 @@ if api_settings.lower_case_query_parameters:
     app.add_middleware(LowerCaseQueryStringMiddleware)
 
 
-@app.get("/healthz", description="Health Check", tags=["Health Check"])
+@app.get(
+    "/healthz",
+    description="Health Check.",
+    summary="Health Check.",
+    operation_id="healthCheck",
+    tags=["Health Check"],
+)
 def ping():
     """Health check."""
     return {"ping": "pong!"}
@@ -114,5 +169,7 @@ def ping():
 def landing(request: Request):
     """TiTiler Landing page"""
     return templates.TemplateResponse(
-        name="index.html", context={"request": request}, media_type="text/html",
+        name="index.html",
+        context={"request": request},
+        media_type="text/html",
     )

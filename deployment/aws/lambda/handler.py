@@ -26,4 +26,4 @@ app.include_router(cog.router, prefix="/cog-b64", tags=["Cloud Optimized GeoTIFF
 logging.getLogger("mangum.lifespan").setLevel(logging.ERROR)
 logging.getLogger("mangum.http").setLevel(logging.ERROR)
 
-handler = Mangum(app, lifespan="auto", log_level="error")
+handler = Mangum(app, lifespan="auto")

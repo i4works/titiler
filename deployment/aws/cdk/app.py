@@ -9,7 +9,9 @@ from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecs as ecs
 from aws_cdk import aws_ecs_patterns as ecs_patterns
 from aws_cdk import aws_iam as iam
-from aws_cdk import aws_lambda, core
+from aws_cdk import aws_lambda
+from aws_cdk import aws_logs as logs
+from aws_cdk import core
 from config import StackSettings
 
 settings = StackSettings()
@@ -31,7 +33,7 @@ class titilerLambdaStack(core.Stack):
         id: str,
         memory: int = 1024,
         timeout: int = 30,
-        runtime: aws_lambda.Runtime = aws_lambda.Runtime.PYTHON_3_8,
+        runtime: aws_lambda.Runtime = aws_lambda.Runtime.PYTHON_3_9,
         concurrent: Optional[int] = None,
         permissions: Optional[List[iam.PolicyStatement]] = None,
         environment: Optional[Dict] = None,
@@ -39,7 +41,7 @@ class titilerLambdaStack(core.Stack):
         **kwargs: Any,
     ) -> None:
         """Define stack."""
-        super().__init__(scope, id, *kwargs)
+        super().__init__(scope, id, **kwargs)
 
         permissions = permissions or []
         environment = environment or {}
@@ -49,13 +51,15 @@ class titilerLambdaStack(core.Stack):
             f"{id}-lambda",
             runtime=runtime,
             code=aws_lambda.Code.from_docker_build(
-                path=os.path.abspath(code_dir), file="lambda/Dockerfile",
+                path=os.path.abspath(code_dir),
+                file="lambda/Dockerfile",
             ),
             handler="handler.handler",
             memory_size=memory,
             reserved_concurrent_executions=concurrent,
             timeout=core.Duration.seconds(timeout),
             environment=environment,
+            log_retention=logs.RetentionDays.ONE_WEEK,
         )
 
         for perm in permissions:
@@ -64,8 +68,8 @@ class titilerLambdaStack(core.Stack):
         api = apigw.HttpApi(
             self,
             f"{id}-endpoint",
-            default_integration=apigw_integrations.LambdaProxyIntegration(
-                handler=lambda_function
+            default_integration=apigw_integrations.HttpLambdaIntegration(
+                f"{id}-integration", handler=lambda_function
             ),
         )
         core.CfnOutput(self, "Endpoint", value=api.url)
@@ -98,7 +102,7 @@ class titilerECSStack(core.Stack):
         cluster = ecs.Cluster(self, f"{id}-cluster", vpc=vpc)
 
         task_env = environment.copy()
-        task_env.update(dict(LOG_LEVEL="error"))
+        task_env.update({"LOG_LEVEL": "error"})
 
         # GUNICORN configuration
         if settings.workers_per_core:
