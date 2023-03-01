@@ -3,7 +3,7 @@
 import logging
 import base64
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from rio_tiler.io import STACReader
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
@@ -45,12 +45,13 @@ logging.getLogger("botocore.credentials").disabled = True
 logging.getLogger("botocore.utils").disabled = True
 logging.getLogger("rio-tiler").setLevel(logging.ERROR)
 
+
+
 # TODO: mypy fails in python 3.9, we need to find a proper way to do this
 templates = Jinja2Templates(directory=str(resources_files(__package__) / "templates"))  # type: ignore
 
 api_settings = ApiSettings()
 
-cog = TilerFactory(path_dependency=DatasetPathParams)
 
 app = FastAPI(
     title=api_settings.name,
@@ -71,7 +72,20 @@ app = FastAPI(
 ###############################################################################
 # Simple Dataset endpoints (e.g Cloud Optimized GeoTIFF)
 if not api_settings.disable_cog:
+    # Custom Path dependency which can `decode` a base64 url
+
+    def DatasetPathParams(
+        url: str = Query(..., description="Dataset URL"),
+        base64_encoded: bool = Query(None)
+    ) -> str:
+        """Create dataset path from args"""
+        if base64_encoded:
+            url = base64.b64decode(url).decode()
+            print('getting url : ', url)
+        return url
+
     cog = TilerFactory(
+        path_dependency=DatasetPathParams,
         router_prefix="/cog",
         extensions=[
             cogValidateExtension(),
